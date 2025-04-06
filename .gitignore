@@ -1,5 +1,9 @@
 /local_datasets
 /AudioData/AudioSet_CSV/audioset_classes
-/AudioData/PTDB-TUG/SPEECH_DATA
+/AudioData/PTDB_TUG/SPEECH_DATA
+/NoisySpeechDataset
+/hw3
+/denoised_examples
+
 
 
