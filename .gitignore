@@ -1,9 +1,12 @@
-/local_datasets
-/AudioData/AudioSet_CSV/audioset_classes
-/AudioData/PTDB_TUG/SPEECH_DATA
-/NoisySpeechDataset
-/hw3
-/denoised_examples
+/data
+/all_models
+/reference
+/__pycache__
+*/__pycache__
+*/*/__pycache__
+*.egg-info
+/checkpoints/*
+
 
 
 
