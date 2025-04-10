@@ -16,8 +16,8 @@ class RawAudioDenoisingDataset(Dataset):
         sample = self.dataset[idx]
         
         # Get audio data
-        noisy_audio = sample["noisy_file"]["array"].astype(np.float32)
-        clean_audio = sample["clean_file"]["array"].astype(np.float32)
+        noisy_audio = sample["noisy"]["array"].astype(np.float32)
+        clean_audio = sample["clean"]["array"].astype(np.float32)
         
         # Data augmentation (optional)
         if self.augment:
@@ -40,7 +40,7 @@ class RawAudioDenoisingDataset(Dataset):
         return {
             "noisy": noisy_tensor,
             "clean": clean_tensor,
-            "original_length": len(sample["noisy_file"]["array"])
+            "original_length": len(sample["noisy"]["array"])
         }
     
     def _adjust_length(self, audio, target_length): #2 seconds at 16kHz
