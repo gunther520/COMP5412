@@ -1,7 +1,9 @@
 import os
 import torch
 import torch.nn as nn
+import torch.optim as optim
 import torch.multiprocessing as mp
+from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
 
 
@@ -35,7 +37,9 @@ def train_ddp(rank, model, criterion, optimizer,world_size, train_dataset, val_d
         train_dataset, 
         batch_size=batch_size,
         sampler=train_sampler,
-        collate_fn=variable_length_collate if fixed_length is None else None
+        collate_fn=variable_length_collate if fixed_length is None else None,
+        num_workers=24,
+        pin_memory=True
     )
     
     # Create validation loader for rank 0
@@ -44,22 +48,37 @@ def train_ddp(rank, model, criterion, optimizer,world_size, train_dataset, val_d
         val_loader = DataLoader(
             val_dataset, 
             batch_size=batch_size, 
-            collate_fn=variable_length_collate if fixed_length is None else None
+            collate_fn=variable_length_collate if fixed_length is None else None,
+            num_workers=24,
+            pin_memory=True
         )
     
 
     # Move model to the device
     device = torch.device(f"cuda:{rank}")
     model = model.to(device)
-    
+
+        # Convert BatchNorm1d to SyncBatchNorm HERE (after DDP setup)
+    if any(isinstance(layer, nn.BatchNorm1d) for layer in model.modules()):
+        model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+
+    scaler = GradScaler()
+
     # Wrap model with DDP
     model = torch.nn.parallel.DistributedDataParallel(
-        model, device_ids=[rank], output_device=rank
+        model, device_ids=[rank], output_device=rank,find_unused_parameters=False
     )
     
     # Loss and optimizer
-    criterion = criterion
+
     optimizer = optimizer
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode='min',     # Reduce LR when the metric stops decreasing
+        factor=0.2,     # Factor by which the learning rate will be reduced. new_lr = lr * factor
+        patience=5,     # Number of epochs with no improvement after which learning rate will be reduced.
+        min_lr=1e-7     # Lower bound on the learning rate
+    )
     
     # Training loop
     best_val_loss = float('inf')
@@ -68,21 +87,37 @@ def train_ddp(rank, model, criterion, optimizer,world_size, train_dataset, val_d
         train_sampler.set_epoch(epoch)
         running_loss = 0.0
 
-        for batch in train_loader:
-            noisy = batch['noisy'].unsqueeze(1).to(device)
-            clean = batch['clean'].unsqueeze(1).to(device)
-            
+        for i,batch in enumerate(train_loader):
+            noisy = batch['noisy'].unsqueeze(1).to(device,non_blocking=True)
+            clean = batch['clean'].unsqueeze(1).to(device,non_blocking=True)
+            #print(f"Input range: {noisy.min().item():.3f} to {noisy.max().item():.3f}")
+            #print(f"Target range: {clean.min().item():.3f} to {clean.max().item():.3f}")
+            mask = batch['mask'].unsqueeze(1).to(device, non_blocking=True)
             # Forward pass
-            output = model(noisy)
 
-            
-            # Compute loss
-            loss = criterion(output, clean)
-            
-            # Backward pass and optimization
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            loss=0
+            with autocast("cuda"):
+                output = model(noisy)
+    
+                # Calculate MSE loss with masking (weight: 1.0)
+                #element_mse = criterion[0](output, clean)  # This returns per-element losses
+                #masked_mse = (element_mse * mask).sum() / (mask.sum() + 1e-8)
+                
+                # Calculate L1 loss with masking (weight: 1.0)
+                element_l1 = criterion[1](output, clean)  # This returns per-element losses
+                masked_l1 = (element_l1 * mask).sum() / (mask.sum() + 1e-8)
+                
+                # Combine losses with weights (e.g., 0.5 for MSE, 0.5 for L1)
+                loss = masked_l1
+            
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) # Adjust 
+            scaler.step(optimizer)
+            
+            scaler.update()
+
             
             running_loss += loss.item()
         epoch_loss = running_loss / len(train_loader)
@@ -93,18 +128,26 @@ def train_ddp(rank, model, criterion, optimizer,world_size, train_dataset, val_d
             # Validation step (only on rank 0)
             model.eval()
             val_loss = 0.0
-            with torch.no_grad():
+            with torch.no_grad(),autocast("cuda"):
                 for val_batch in val_loader:
-                    val_noisy = val_batch['noisy'].unsqueeze(1).to(device)
-                    val_clean = val_batch['clean'].unsqueeze(1).to(device)
-                    
+                    val_noisy = val_batch['noisy'].unsqueeze(1).to(device,non_blocking=True)
+                    val_clean = val_batch['clean'].unsqueeze(1).to(device, non_blocking=True)
+                    val_mask = val_batch['mask'].unsqueeze(1).to(device, non_blocking=True)
+    
                     # Forward pass
                     val_output = model(val_noisy)
 
+                    # Calculate masked losses
+                    #element_mse = criterion[0](val_output, val_clean)
+                    #masked_mse = (element_mse * val_mask).sum() / (val_mask.sum() + 1e-8)
                     
-                    # Compute loss
-                    loss = criterion(val_output, val_clean)
-                    val_loss += loss.item()
+                    element_l1 = criterion[1](val_output, val_clean)
+                    masked_l1 = (element_l1 * val_mask).sum() / (val_mask.sum() + 1e-8)
+                    
+                    # Combine losses with weights
+                    val_batch_loss = masked_l1
+                    val_loss += val_batch_loss.item()
+
             avg_val_loss = val_loss / len(val_loader)
             print(f"Validation Loss: {avg_val_loss:.4f}")
             
@@ -112,6 +155,9 @@ def train_ddp(rank, model, criterion, optimizer,world_size, train_dataset, val_d
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
                 torch.save(model.module.state_dict(), "../checkpoints/best_model_ddp.pth")
+
+            scheduler.step(avg_val_loss)
+            print(f"Current LR: {scheduler.get_last_lr()[0]:.7f}")
     
     # Cleanup
     torch.distributed.destroy_process_group()
@@ -121,7 +167,6 @@ def run_ddp_training(model,criterion, optimizer,train_dataset, val_dataset, batc
                     variable_length_collate, num_epochs=10):
     # Get world size
     world_size = torch.cuda.device_count()
-    
     if world_size > 1:
         mp.spawn(
             train_ddp,

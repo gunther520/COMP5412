@@ -99,8 +99,14 @@ class RawAudioDenoisingDataset(Dataset):
         clean_batch = torch.stack(clean_batch)
         lengths = torch.tensor(lengths)
         
+        # Create mask tensor: 1 for actual data, 0 for padding
+        mask_batch = torch.zeros_like(noisy_batch)
+        for i, length in enumerate(lengths):
+            mask_batch[i, :length] = 1.0
+        
         return {
             "noisy": noisy_batch,
             "clean": clean_batch,
-            "lengths": lengths
+            "lengths": lengths,
+            "mask": mask_batch
         }
