@@ -173,6 +173,7 @@ def train_ddp(rank, model, criterion, optimizer,world_size, train_dataset, val_d
 def run_ddp_training(model,criterion, optimizer,train_dataset, val_dataset, batch_size, fixed_length, 
                     variable_length_collate, num_epochs=10):
     # Get world size
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3,4,5'
     world_size = torch.cuda.device_count()
     if world_size > 1:
         mp.spawn(
