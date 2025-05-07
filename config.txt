@@ -1,0 +1,6 @@
+training on 
+Inception : num_channels=[(i)*24 for i in range(1,5)], have metallic noise, 64000
+Inception2 :num_channels=[(i)*24 for i in range(1,4)], have metallic noise, 64000
+all_MSE: num_channels=[(i)*24 for i in range(1,5)], ok
+all_MSE_channels: num_channels=[(i**2)*24 for i in range(1,5)],
+all_model_complete: num_channels=[(i**2)*24 for i in range(1,5)],
