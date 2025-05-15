@@ -90,6 +90,7 @@ def train_ddp(rank, model, criterion, optimizer,world_size, train_dataset, val_d
         for i,batch in enumerate(train_loader):
             noisy = batch['noisy'].unsqueeze(1).to(device,non_blocking=True)
             clean = batch['clean'].unsqueeze(1).to(device,non_blocking=True)
+            noise = batch['noise'].unsqueeze(1).to(device,non_blocking=True)
             #print(f"Input range: {noisy.min().item():.3f} to {noisy.max().item():.3f}")
             #print(f"Target range: {clean.min().item():.3f} to {clean.max().item():.3f}")
             mask = batch['mask'].unsqueeze(1).to(device, non_blocking=True)
@@ -99,14 +100,15 @@ def train_ddp(rank, model, criterion, optimizer,world_size, train_dataset, val_d
             loss=0
             with autocast("cuda"):
                 output = model(noisy)
-    
                 # Calculate MSE loss with masking (weight: 1.0)
                 #element_mse = criterion[0](output, clean)  # This returns per-element losses
                 #masked_mse = (element_mse * mask).sum() / (mask.sum() + 1e-8)
-                
+                output_clean, output_noise = output["speech"], output["noise"]
                 # Calculate L1 loss with masking (weight: 1.0)
-                element_l1 = criterion[1](output, clean)  # This returns per-element losses
-                masked_l1 = (element_l1 * mask).sum() / (mask.sum() + 1e-8)
+                element_l1 = criterion[1](output_clean, clean) 
+                noise_l1 = criterion[1](output_noise, noise)
+
+                masked_l1 = ((element_l1 * mask).sum()+ (noise_l1*mask).sum()) / (mask.sum() + 1e-8)
                 
                 # Combine losses with weights (e.g., 0.5 for MSE, 0.5 for L1)
                 loss = masked_l1
@@ -132,17 +134,22 @@ def train_ddp(rank, model, criterion, optimizer,world_size, train_dataset, val_d
                 for val_batch in val_loader:
                     val_noisy = val_batch['noisy'].unsqueeze(1).to(device,non_blocking=True)
                     val_clean = val_batch['clean'].unsqueeze(1).to(device, non_blocking=True)
+                    val_noise = val_batch['noise'].unsqueeze(1).to(device, non_blocking=True)
                     val_mask = val_batch['mask'].unsqueeze(1).to(device, non_blocking=True)
     
                     # Forward pass
                     val_output = model(val_noisy)
+                    val_output_clean,val_output_noise = val_output["speech"], val_output["noise"]
 
                     # Calculate masked losses
                     #element_mse = criterion[0](val_output, val_clean)
                     #masked_mse = (element_mse * val_mask).sum() / (val_mask.sum() + 1e-8)
                     
-                    element_l1 = criterion[1](val_output, val_clean)
-                    masked_l1 = (element_l1 * val_mask).sum() / (val_mask.sum() + 1e-8)
+                    element_l1 = criterion[1](val_output_clean, val_clean)  # This returns per-element losses
+                    noise_l1 = criterion[1](val_output_noise, val_noise)  # This returns per-element losses
+                    # Calculate L1 loss with masking (weight: 1.0)
+
+                    masked_l1 = ((element_l1 * val_mask).sum() + (noise_l1 * val_mask).sum()) / (val_mask.sum() + 1e-8)
                     
                     # Combine losses with weights
                     val_batch_loss = masked_l1
@@ -166,6 +173,7 @@ def train_ddp(rank, model, criterion, optimizer,world_size, train_dataset, val_d
 def run_ddp_training(model,criterion, optimizer,train_dataset, val_dataset, batch_size, fixed_length, 
                     variable_length_collate, num_epochs=10):
     # Get world size
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3,4,5'
     world_size = torch.cuda.device_count()
     if world_size > 1:
         mp.spawn(

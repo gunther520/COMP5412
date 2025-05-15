@@ -6,6 +6,9 @@
 */*/__pycache__
 *.egg-info
 /checkpoints/*
+/build
+/-e
+/111.m4a
 
 
 
