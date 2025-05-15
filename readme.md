@@ -1,4 +1,5 @@
-# Speech Denoising Project
+# Speech Denoising Project for COMP5214
+Yes, I type the course code wrong.
 
 This project implements speech denoising using deep learning approaches, specifically with WaveUNet architecture.
 
@@ -14,4 +15,7 @@ This project implements speech denoising using deep learning approaches, specifi
 - `checkpoints/`: Saved model weights
 
 ## Getting Started
-
+0.Create a virtual environment
+1.clone
+2.pip install .
+3.resolve the dependencies by yourself!
